@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # =============================================================================
 # HUMAnN3 post-processing pipeline (v3)
@@ -77,18 +78,62 @@ if [[ $HAS_EC -eq 1 ]]; then
   humann_split_stratified_table -i "$WORK_DIR/all_ec.tsv"     -o "$WORK_DIR/ec_split_rpk/"
 fi
  
-# ---- 5. (REMOVED) Rename step --------------------------------------------
-# Modern HUMAnN3 produces pathway IDs that already include human-readable
-# names in the form "PWY-ID: pathway name". Re-running humann_rename_table
-# on already-named entries silently fails to match (mapping file has bare
-# IDs only) and overwrites the existing names with ": NO_NAME". So we
-# skip this step entirely. KO and EC outputs are similarly already-named.
-echo "[5/6] Rename step skipped (HUMAnN3 output is already named)."
+# ---- 5. Conditionally rename (only when IDs are bare) ----------------------
+# Modern HUMAnN3 pathway IDs already carry ": <name>" suffixes, but KO and EC
+# IDs come bare. Re-renaming a named file silently appends ": NO_NAME" and
+# destroys the existing names, so we check each file first.
+echo "[5/6] Renaming files that need it ..."
+ 
+needs_rename () {
+  # Returns 0 (true) if <50% of non-special rows carry ": " in the ID column.
+  local f=$1
+  local named total
+  total=$(tail -n +2 "$f" | grep -cv "^UNMAPPED\|^UNINTEGRATED" || true)
+  [[ $total -eq 0 ]] && return 1
+  named=$(tail -n +2 "$f" | grep -v "^UNMAPPED\|^UNINTEGRATED" \
+          | cut -f1 | grep -c ": " || true)
+  awk -v n=$named -v t=$total 'BEGIN{exit !(n/t < 0.5)}'
+}
+ 
+rename_if_needed () {
+  local in=$1 out=$2 mapping=$3 label=$4
+  if needs_rename "$in"; then
+    echo "  $label: renaming ($(basename "$in"))"
+    humann_rename_table -i "$in" -o "$out" --names "$mapping"
+  else
+    echo "  $label: already named, copying through"
+    cp "$in" "$out"
+  fi
+}
+ 
+rename_if_needed \
+  "$WORK_DIR/path_split_cpm/all_pathabundance_cpm_unstratified.tsv" \
+  "$WORK_DIR/path_split_cpm/all_pathabundance_cpm_named_unstratified.tsv" \
+  metacyc-pwy "pathways"
+ 
+rename_if_needed \
+  "$WORK_DIR/rxn_split_cpm/all_rxn_cpm_unstratified.tsv" \
+  "$WORK_DIR/rxn_split_cpm/all_rxn_cpm_named_unstratified.tsv" \
+  metacyc-rxn "reactions"
+ 
+if [[ $HAS_KO -eq 1 ]]; then
+  rename_if_needed \
+    "$WORK_DIR/ko_split_cpm/all_ko_cpm_unstratified.tsv" \
+    "$WORK_DIR/ko_split_cpm/all_ko_cpm_named_unstratified.tsv" \
+    kegg-orthology "KOs"
+fi
+if [[ $HAS_EC -eq 1 ]]; then
+  rename_if_needed \
+    "$WORK_DIR/ec_split_cpm/all_ec_cpm_unstratified.tsv" \
+    "$WORK_DIR/ec_split_cpm/all_ec_cpm_named_unstratified.tsv" \
+    ec "ECs"
+fi
  
 # ---- 6. Sanity-check name presence -----------------------------------------
-echo "[6/6] Verifying that pathway IDs carry names ..."
+echo "[6/6] Verifying that all output files carry names ..."
 check_named () {
   local f=$1
+  [[ -f "$f" ]] || return 0
   local with_name total
   total=$(tail -n +2 "$f" | grep -cv "^UNMAPPED\|^UNINTEGRATED" || true)
   with_name=$(tail -n +2 "$f" | grep -v "^UNMAPPED\|^UNINTEGRATED" \
@@ -99,17 +144,17 @@ check_named () {
       "$(awk -v a=$with_name -v b=$total 'BEGIN{print (a/b)*100}')"
   fi
 }
-check_named "$WORK_DIR/path_split_cpm/all_pathabundance_cpm_unstratified.tsv"
-[[ $HAS_KO -eq 1 ]] && check_named "$WORK_DIR/ko_split_cpm/all_ko_cpm_unstratified.tsv"
-[[ $HAS_EC -eq 1 ]] && check_named "$WORK_DIR/ec_split_cpm/all_ec_cpm_unstratified.tsv"
+check_named "$WORK_DIR/path_split_cpm/all_pathabundance_cpm_named_unstratified.tsv"
+[[ $HAS_KO -eq 1 ]] && check_named "$WORK_DIR/ko_split_cpm/all_ko_cpm_named_unstratified.tsv"
+[[ $HAS_EC -eq 1 ]] && check_named "$WORK_DIR/ec_split_cpm/all_ec_cpm_named_unstratified.tsv"
  
 cat <<EOF
  
 Post-processing complete. Use these files in the Rmd:
   proc_dir <- "$WORK_DIR"
-  path_cpm_unstrat_file <- file.path(proc_dir, "path_split_cpm", "all_pathabundance_cpm_unstratified.tsv")
+  path_cpm_unstrat_file <- file.path(proc_dir, "path_split_cpm", "all_pathabundance_cpm_named_unstratified.tsv")
   path_cpm_strat_file   <- file.path(proc_dir, "path_split_cpm", "all_pathabundance_cpm_stratified.tsv")
-  ko_cpm_unstrat_file   <- file.path(proc_dir, "ko_split_cpm",   "all_ko_cpm_unstratified.tsv")
+  ko_cpm_unstrat_file   <- file.path(proc_dir, "ko_split_cpm",   "all_ko_cpm_named_unstratified.tsv")
   path_rpk_unstrat_file <- file.path(proc_dir, "path_split_rpk", "all_pathabundance_unstratified.tsv")
   ko_rpk_unstrat_file   <- file.path(proc_dir, "ko_split_rpk",   "all_ko_unstratified.tsv")
 EOF
